@@ -1,0 +1,47 @@
+version: "3.8"
+services:
+  database:
+    image: postgres:14.1-alpine
+    container_name: expenser-database
+    restart: always
+    env_file:
+      - vars.env
+    networks:
+      - app
+  expenser-sync-currencies:
+    image: jcvegan/expenser-sync-currencies:latest
+    container_name: expenser-currencies-job
+    restart: on-failure
+    env_file:
+      - vars.env
+    networks:
+      - app
+    depends_on:
+      - database
+  expenser-app:
+    image: jcvegan/expenser:latest
+    container_name: expenser-app
+    restart: on-failure
+    ports:
+      - 9898:80
+    env_file:
+      - vars.env
+    networks:
+      - app
+    depends_on:
+      - database
+  backups:
+    image: prodrigestivill/postgres-backup-local
+    restart: always
+    user: postgres:postgres
+    volumes:
+      - /var/opt/pgbackups:/backups
+    links:
+      - "database:postgres"
+    depends_on:
+      - database
+    env_file:
+      - vars.env
+networks:
+  app:
+  
