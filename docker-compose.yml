@@ -1,7 +1,7 @@
 version: "3.8"
 services:
   database:
-    image: postgres:14.1-alpine
+    image: mysql
     container_name: expenser-database
     restart: always
     env_file:
@@ -31,15 +31,14 @@ services:
     depends_on:
       - database
   backups:
-    image: prodrigestivill/postgres-backup-local
+    image: databack/mysql-backup
     restart: always
-    user: postgres:postgres
     volumes:
-      - /var/opt/pgbackups:/backups
-    links:
-      - "database:postgres"
+      - /var/opt/mysql-backups:/backups
     depends_on:
       - database
+    networks:
+      - app
     env_file:
       - vars.env
 networks:
