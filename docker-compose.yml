@@ -1,46 +1,278 @@
 version: "3.8"
 services:
+  logger:
+    image: datalust/seq:${LOGGER_VERSION}
+    restart: unless-stopped
+    environment:
+      - ACCEPT_EULA=Y
+    ports:
+      - ${LOGGER_PORT}:80
+    networks:
+      - expenser
   database:
-    image: mysql
+    image: mongo:${DATABASE_VERSION}
     container_name: expenser-database
     restart: always
-    env_file:
-      - vars.env
+    environment:
+      - MONGO_INITDB_ROOT_USERNAME=${COMMON_USER}
+      - MONGO_INITDB_ROOT_PASSWORD=${COMMON_PASSWORD}
     networks:
-      - app
+      - expenser
+  queues:
+    image: rabbitmq:${QUEUES_VERSION}
+    container_name: expenser-rabbitmq
+    restart: always
+    environment:
+      - RABBITMQ_DEFAULT_USER=${COMMON_USER}
+      - RABBITMQ_DEFAULT_PASS=${COMMON_PASSWORD}
+    networks:
+      - expenser
+  tika:
+    image: logicalspark/docker-tikaserver:latest
+    container_name: expenser-tika
+    restart: always
+    networks:
+      - expenser
+  setup_es:
+    image: docker.elastic.co/elasticsearch/elasticsearch:${ELASTICSEARCH_VERSION}
+    volumes:
+      - "./certs:/usr/share/elasticsearch/config/certs"
+    user: "0"
+    command: >
+      bash -c '
+        if [ x${COMMON_PASSWORD} == x ]; then
+          echo "Set the ELASTIC_PASSWORD environment variable in the .env file";
+          exit 1;
+        fi;
+        if [ ! -f config/certs/ca.zip ]; then
+          echo "Creating CA";
+          bin/elasticsearch-certutil ca --silent --pem -out config/certs/ca.zip;
+          unzip config/certs/ca.zip -d config/certs;
+        fi;
+        if [ ! -f config/certs/certs.zip ]; then
+          echo "Creating certs";
+          echo -ne \
+          "instances:\n"\
+          "  - name: es01\n"\
+          "    dns:\n"\
+          "      - es01\n"\
+          "      - localhost\n"\
+          "    ip:\n"\
+          "      - 127.0.0.1\n"\
+          "  - name: es02\n"\
+          "    dns:\n"\
+          "      - es02\n"\
+          "      - localhost\n"\
+          "    ip:\n"\
+          "      - 127.0.0.1\n"\
+          "  - name: es03\n"\
+          "    dns:\n"\
+          "      - es03\n"\
+          "      - localhost\n"\
+          "    ip:\n"\
+          "      - 127.0.0.1\n"\
+          > config/certs/instances.yml;
+          bin/elasticsearch-certutil cert --silent --pem -out config/certs/certs.zip --in config/certs/instances.yml --ca-cert config/certs/ca/ca.crt --ca-key config/certs/ca/ca.key;
+          unzip config/certs/certs.zip -d config/certs;
+        fi;
+        echo "Setting file permissions"
+        chown -R root:root config/certs;
+        find . -type d -exec chmod 750 \{\} \;;
+        find . -type f -exec chmod 640 \{\} \;;
+        echo "Waiting for Elasticsearch availability";
+        until curl -s --cacert config/certs/ca/ca.crt https://es01:9200 | grep -q "missing authentication credentials"; do sleep 30; done;
+        echo "Setting kibana_system password";
+        until curl -s -X POST --cacert config/certs/ca/ca.crt -u "elastic:${COMMON_PASSWORD}" -H "Content-Type: application/json" https://es01:9200/_security/user/kibana_system/_password -d "{\"password\":\"${COMMON_PASSWORD}\"}" | grep -q "^{}"; do sleep 10; done;
+        echo "All done!";
+      '
+    healthcheck:
+      test: ["CMD-SHELL", "[ -f config/certs/es01/es01.crt ]"]
+      interval: 1s
+      timeout: 5s
+      retries: 120
+    networks:
+      - expenser
+  es01:
+    depends_on:
+      setup_es:
+        condition: service_healthy
+    image: docker.elastic.co/elasticsearch/elasticsearch:${ELASTICSEARCH_VERSION}
+    volumes:
+      - "./certs:/usr/share/elasticsearch/config/certs"
+      - "./data/es01:/usr/share/elasticsearch/data"
+    environment:
+      - node.name=es01
+      - cluster.name=${ELASTICSEARCH_CLUSTER_NAME}
+      - cluster.initial_master_nodes=es01,es02,es03
+      - discovery.seed_hosts=es02,es03
+      - ELASTIC_PASSWORD=${COMMON_PASSWORD}
+      - bootstrap.memory_lock=true
+      - xpack.security.enabled=true
+      - xpack.security.http.ssl.enabled=true
+      - xpack.security.http.ssl.key=certs/es01/es01.key
+      - xpack.security.http.ssl.certificate=certs/es01/es01.crt
+      - xpack.security.http.ssl.certificate_authorities=certs/ca/ca.crt
+      - xpack.security.transport.ssl.enabled=true
+      - xpack.security.transport.ssl.key=certs/es01/es01.key
+      - xpack.security.transport.ssl.certificate=certs/es01/es01.crt
+      - xpack.security.transport.ssl.certificate_authorities=certs/ca/ca.crt
+      - xpack.security.transport.ssl.verification_mode=certificate
+      - xpack.license.self_generated.type=${ELASTICSEARCH_LICENSE}
+    mem_limit: ${ELASTICSEARCH_MEM_LIMIT}
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "curl -s --cacert config/certs/ca/ca.crt https://localhost:9200 | grep -q 'missing authentication credentials'",
+        ]
+      interval: 10s
+      timeout: 10s
+      retries: 120
+    networks:
+      - expenser
+  es02:
+    depends_on:
+      - es01
+    image: docker.elastic.co/elasticsearch/elasticsearch:${ELASTICSEARCH_VERSION}
+    volumes:
+      - "./certs:/usr/share/elasticsearch/config/certs"
+      - "./data/es02:/usr/share/elasticsearch/data"
+    environment:
+      - node.name=es02
+      - cluster.name=${ELASTICSEARCH_CLUSTER_NAME}
+      - cluster.initial_master_nodes=es01,es02,es03
+      - discovery.seed_hosts=es01,es03
+      - bootstrap.memory_lock=true
+      - xpack.security.enabled=true
+      - xpack.security.http.ssl.enabled=true
+      - xpack.security.http.ssl.key=certs/es02/es02.key
+      - xpack.security.http.ssl.certificate=certs/es02/es02.crt
+      - xpack.security.http.ssl.certificate_authorities=certs/ca/ca.crt
+      - xpack.security.transport.ssl.enabled=true
+      - xpack.security.transport.ssl.key=certs/es02/es02.key
+      - xpack.security.transport.ssl.certificate=certs/es02/es02.crt
+      - xpack.security.transport.ssl.certificate_authorities=certs/ca/ca.crt
+      - xpack.security.transport.ssl.verification_mode=certificate
+      - xpack.license.self_generated.type=${ELASTICSEARCH_LICENSE}
+    mem_limit: ${ELASTICSEARCH_MEM_LIMIT}
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "curl -s --cacert config/certs/ca/ca.crt https://localhost:9200 | grep -q 'missing authentication credentials'",
+        ]
+      interval: 10s
+      timeout: 10s
+      retries: 120
+    networks:
+      - expenser
+  es03:
+    depends_on:
+      - es02
+    image: docker.elastic.co/elasticsearch/elasticsearch:${ELASTICSEARCH_VERSION}
+    volumes:
+      - "./certs:/usr/share/elasticsearch/config/certs"
+      - "./data/es03:/usr/share/elasticsearch/data"
+    environment:
+      - node.name=es03
+      - cluster.name=${ELASTICSEARCH_CLUSTER_NAME}
+      - cluster.initial_master_nodes=es01,es02,es03
+      - discovery.seed_hosts=es01,es02
+      - bootstrap.memory_lock=true
+      - xpack.security.enabled=true
+      - xpack.security.http.ssl.enabled=true
+      - xpack.security.http.ssl.key=certs/es03/es03.key
+      - xpack.security.http.ssl.certificate=certs/es03/es03.crt
+      - xpack.security.http.ssl.certificate_authorities=certs/ca/ca.crt
+      - xpack.security.transport.ssl.enabled=true
+      - xpack.security.transport.ssl.key=certs/es03/es03.key
+      - xpack.security.transport.ssl.certificate=certs/es03/es03.crt
+      - xpack.security.transport.ssl.certificate_authorities=certs/ca/ca.crt
+      - xpack.security.transport.ssl.verification_mode=certificate
+      - xpack.license.self_generated.type=${ELASTICSEARCH_LICENSE}
+    mem_limit: ${ELASTICSEARCH_MEM_LIMIT}
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "curl -s --cacert config/certs/ca/ca.crt https://localhost:9200 | grep -q 'missing authentication credentials'",
+        ]
+      interval: 10s
+      timeout: 10s
+      retries: 120
+    networks:
+      - expenser
   expenser-sync-currencies:
-    image: jcvegan/expenser-sync-currencies:latest
+    image: jcvegan/expenser-sync-currencies:${EXPENSER_VERSION}
     container_name: expenser-currencies-job
     restart: on-failure
-    env_file:
-      - vars.env
+    environment:
+      - DOTNET_ENVIRONMENT=Production
+      - ConnectionStrings__Expenser=mongodb://${COMMON_USER}:${COMMON_PASSWORD}@expenser-database:27017/expenser?authSource=admin
+      - Queues__Host=expenser-rabbitmq
+      - Queues__User=${COMMON_USER}
+      - Queues__Password=${COMMON_PASSWORD}
+      - Queues__QueueName=events
+      - Queues__Terms__Created=created
+      - Queues__Terms__Updated=updated
+      - Queues__Terms__Deleted=deleted
+      - Queues__Terms__Indexing=indexing
+      - Queues__Prefixes__Events=events
+      - DecodingService__ServiceUri=http://expenser-tika:9998/tika
     networks:
-      - app
+      - expenser
     depends_on:
       - database
+      - logger
+      - queues
+      - es01
+      - es02
+      - es03
+      - tika
   expenser-app:
-    image: jcvegan/expenser:latest
+    image: jcvegan/expenser:${EXPENSER_VERSION}
     container_name: expenser-app
     restart: on-failure
     ports:
       - 9898:80
-    env_file:
-      - vars.env
+    environment:
+      - ASPNETCORE_ENVIRONMENT=production
+      - ConnectionStrings__Expenser=mongodb://${COMMON_USER}:${COMMON_PASSWORD}@expenser-database:27017/expenser?authSource=admin
+      - Queues__Host=expenser-rabbitmq
+      - Queues__User=${COMMON_USER}
+      - Queues__Password=${COMMON_PASSWORD}
+      - Queues__QueueName=events
+      - Queues__Terms__Created=created
+      - Queues__Terms__Updated=updated
+      - Queues__Terms__Deleted=deleted
+      - Queues__Terms__Indexing=indexing
+      - Queues__Prefixes__Events=events
+      - DecodingService__ServiceUri=http://expenser-tika:9998/tika
+      - IndexingService__ElasticSearchUrl=https://es01:9200
+      - IndexingService__Username=elastic
+      - IndexingService__Password=${COMMON_PASSWORD}
     networks:
-      - app
+      - expenser
     depends_on:
       - database
-  backups:
-    image: databack/mysql-backup
-    restart: always
-    volumes:
-      - /var/opt/mysql-backups:/backups
-    depends_on:
-      - database
-    networks:
-      - app
-    env_file:
-      - vars.env
+      - logger
+      - queues
+      - es01
+      - es02
+      - es03
+      - tika
+
 networks:
-  app:
-  
+  expenser:
