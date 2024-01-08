@@ -273,6 +273,35 @@ services:
       - es02
       - es03
       - tika
-
+  expenser-file-indexing:
+    image: jcvegan/expenser-file-indexing:${EXPENSER_VERSION}
+    container_name: expenser-job-indexing
+    restart: on-failure
+    environment:
+      - ASPNETCORE_ENVIRONMENT=production
+      - ConnectionStrings__Expenser=mongodb://${COMMON_USER}:${COMMON_PASSWORD}@expenser-database:27017/expenser?authSource=admin
+      - Queues__Host=expenser-rabbitmq
+      - Queues__User=${COMMON_USER}
+      - Queues__Password=${COMMON_PASSWORD}
+      - Queues__QueueName=events
+      - Queues__Terms__Created=created
+      - Queues__Terms__Updated=updated
+      - Queues__Terms__Deleted=deleted
+      - Queues__Terms__Indexing=indexing
+      - Queues__Prefixes__Events=events
+      - DecodingService__ServiceUri=http://expenser-tika:9998/tika
+      - IndexingService__ElasticSearchUrl=https://es01:9200
+      - IndexingService__Username=elastic
+      - IndexingService__Password=${COMMON_PASSWORD}
+    networks:
+      - expenser
+    depends_on:
+      - database
+      - logger
+      - queues
+      - es01
+      - es02
+      - es03
+      - tika
 networks:
   expenser:
