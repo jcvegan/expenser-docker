@@ -28,7 +28,7 @@ services:
     networks:
       - expenser
   tika:
-    image: logicalspark/docker-tikaserver:latest
+    image: apache/tika:latest-full
     container_name: expenser-tika
     restart: always
     networks:
