@@ -2,6 +2,7 @@ version: "3.8"
 services:
   logger:
     image: datalust/seq:${LOGGER_VERSION}
+    container_name: seq
     restart: unless-stopped
     environment:
       - ACCEPT_EULA=Y
@@ -355,6 +356,7 @@ services:
       - IndexingService__ElasticSearchUrl=https://es01:9200
       - IndexingService__Username=elastic
       - IndexingService__Password=${COMMON_PASSWORD}
+      - Main__RootPath=/app/data
     networks:
       - expenser
     depends_on:
@@ -366,6 +368,9 @@ services:
       - es03
       - tika
       - expenser-app
+    volumes:
+      - "./data/uploader/pending:/app/data/pending"
+      - "./data/uploader/processed:/app/data/processed"
   expenser-statement-uploaded:
     image: jcvegan/expenser-statement-uploaded:${EXPENSER_VERSION}
     container_name: expenser-statement-uploaded
